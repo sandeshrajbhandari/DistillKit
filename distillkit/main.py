@@ -78,7 +78,8 @@ def _load_dataset(
     prepared_dataset_path: str | None = None,
     keep_in_memory: bool | None = None,
     prepacked: bool = False,
-) -> datasets.Dataset:
+    streaming: bool = False,
+) -> datasets.Dataset | datasets.IterableDataset:
     if prepared_dataset_path:
         honk = json.dumps(
             {
@@ -101,6 +102,7 @@ def _load_dataset(
             revision=path.revision,
             split=path.split,
             keep_in_memory=keep_in_memory,
+            streaming=streaming,
         )
     elif isinstance(path, LocalDataset):
         res = datasets.load_from_disk(path.disk_path, keep_in_memory=keep_in_memory)
@@ -115,20 +117,24 @@ def _load_dataset(
             "Unsupported dataset type. Please provide a valid Hugging Face repo ID or local dataset path."
         )
 
-    if prepacked:
-        last_idx = len(res) - 1
-        while len(res) >= 2 and len(res[last_idx]["input_ids"]) != len(
-            res[0]["input_ids"]
-        ):
-            last_idx -= 1
-        if last_idx <= 0:
-            raise RuntimeError("Dataset config is probs wrong")
-        res = res.select(range(last_idx + 1))
+    if streaming:
+        if num_samples:
+            res = res.take(num_samples)
+    else:
+        if prepacked:
+            last_idx = len(res) - 1
+            while len(res) >= 2 and len(res[last_idx]["input_ids"]) != len(
+                res[0]["input_ids"]
+            ):
+                last_idx -= 1
+            if last_idx <= 0:
+                raise RuntimeError("Dataset config is probs wrong")
+            res = res.select(range(last_idx + 1))
 
-    if seed:
-        res = res.shuffle(seed=seed)
-    if num_samples:
-        res = res.select(range(num_samples))
+        if seed:
+            res = res.shuffle(seed=seed)
+        if num_samples:
+            res = res.select(range(num_samples))
     if (
         (not prepacked)
         and ("text" not in res.column_names)
@@ -172,6 +178,7 @@ def load_data(
         prepared_dataset_path=config.prepared_dataset_path,
         keep_in_memory=keep_in_memory,
         prepacked=config.prepacked,
+        streaming=config.streaming,
     )
     ds_eval = None
     if config.eval_dataset:
@@ -183,6 +190,7 @@ def load_data(
             prepared_dataset_path=config.prepared_dataset_path,
             keep_in_memory=keep_in_memory,
             prepacked=config.prepacked,
+            streaming=config.streaming,
         )
     return ds_train, ds_eval
 

@@ -1,5 +1,7 @@
 # DistillKit
 
+> **`sandesh-patches` branch** — personal fork with LoRA fine-tuning, streaming dataset support, response-only masking, and `sub_top_k` teacher logprob truncation. See [Changes](#-sandesh-patches-changes) below.
+
 A flexible and production-ready toolkit for knowledge distillation of large language models, supporting both online and offline distillation workflows with advanced logit compression.
 
 DistillKit powers the training of many of Arcee's popular open-source models, including [Virtuoso](https://huggingface.co/arcee-ai/Virtuoso-Large), [SuperNova Medius](https://huggingface.co/arcee-ai/SuperNova-Medius), and [Blitz](https://huggingface.co/arcee-ai/Arcee-Blitz).
@@ -391,6 +393,69 @@ DistillKit is released under the Apache License 2.0.
 
 - Flash Attention packing implementation adapted from [Functionary](https://github.com/MeetKai/functionary) (MIT License)
 - Built on [HuggingFace Transformers](https://github.com/huggingface/transformers), [TRL](https://github.com/huggingface/trl), and [Accelerate](https://github.com/huggingface/accelerate)
+
+## 🌿 sandesh-patches Changes
+
+Customizations on top of upstream DistillKit:
+
+### LoRA Fine-Tuning
+- **`LoRAConfig`** in `configuration.py` — `r`, `alpha`, `dropout`, `target_modules`, `bias`, `task_type`, `use_rslora`, `lora_dtype`.
+- `load_student_model()` wraps the base model with PEFT `get_peft_model()` when `config.lora` is set.
+- `do_distill()` saves LoRA adapters via `model.save_pretrained()` instead of full model save.
+- **4.6M trainable params** (0.76%) on Qwen3-0.6B with `r=16` on `q_proj, k_proj, v_proj, o_proj`.
+
+### Streaming Dataset Support
+- `streaming: bool` field on `DatasetConfiguration` (default `false`).
+- `_load_dataset()` passes `streaming` to `datasets.load_dataset()`, returns `IterableDataset` when enabled.
+- Skips `len()`-dependent operations (prepacked length check, shuffle, `.select()`) in streaming mode.
+- Uses `.take(num_samples)` instead of `.select(range(num_samples))`.
+
+### Response-Only Masking
+- Per-batch collator (`_make_response_collator`) zeroes out user/tokens before the response part.
+- Configurable via `instruction_part` and `response_part` delimiters.
+- Loss only computed on assistant response tokens.
+
+### `sub_top_k` Teacher Truncation
+- Truncates decompressed teacher logprobs to top-`sub_top_k` (e.g., 32) before computing KL loss.
+- Reduces memory pressure and focuses loss on the most probable tokens.
+
+### `remove_unused_columns: false`
+- Required so `compressed_logprobs` & `bytepacked_indices` survive the Trainer's column filtering.
+
+### Config Example
+```yaml
+model: models/Qwen3-0.6B
+sequence_length: 4096
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+
+dataset:
+  train_dataset:
+    repo_id: juanhm04/Qwen3-235B-Logits-Packed-8192
+    split: train
+  num_samples: 2000
+  streaming: true
+  prepacked: true
+  response_only: true
+  instruction_part: "<|im_start|>user\n"
+  response_part: "<|im_start|>assistant\n"
+
+teacher:
+  sub_top_k: 32
+
+training_args:
+  max_steps: 500
+  remove_unused_columns: false
+  gradient_checkpointing: true
+```
 
 ---
 

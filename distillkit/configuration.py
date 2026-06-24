@@ -109,6 +109,10 @@ class DatasetConfiguration(BaseModel):
         default=None,
         description="Path to store prepared dataset.",
     )
+    streaming: bool = Field(
+        default=False,
+        description="Stream dataset from Hugging Face without downloading full shards.",
+    )
     prepacked: bool = Field(
         default=False,
         description="Assume dataset is pretokenized and packed, skip TRL packing.",
