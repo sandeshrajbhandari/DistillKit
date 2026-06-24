@@ -113,6 +113,18 @@ class DatasetConfiguration(BaseModel):
         default=False,
         description="Assume dataset is pretokenized and packed, skip TRL packing.",
     )
+    response_only: bool = Field(
+        default=False,
+        description="If True, mask non-response tokens with -100 in the data collator.",
+    )
+    instruction_part: str = Field(
+        default="<|im_start|>user\n",
+        description="Token delimiter marking start of instruction/user turn.",
+    )
+    response_part: str = Field(
+        default="<|im_start|>assistant\n",
+        description="Token delimiter marking start of assistant response.",
+    )
 
 
 class TeacherModelConfig(BaseModel):
@@ -134,6 +146,25 @@ class TeacherDatasetConfig(BaseModel):
         default=None,
         description="Logit compression configuration. Must match configuration used to capture logits.",
     )
+    sub_top_k: int | None = Field(
+        default=None,
+        description="Subset the decompressed top-k logprobs to this many. "
+        "Useful to truncate the 128 pre-stored logprobs to a smaller k for loss computation.",
+    )
+
+
+class LoRAConfig(BaseModel):
+    r: int = Field(default=16, description="LoRA rank.")
+    alpha: int = Field(default=32, description="LoRA alpha scaling.")
+    dropout: float = Field(default=0.05, description="LoRA dropout rate.")
+    target_modules: list[str] | None = Field(
+        default=None,
+        description="Module names to apply LoRA. If None, applies to all query/key/value/output/gate/up/down linear layers.",
+    )
+    bias: str = Field(default="none", description="LoRA bias type: 'none', 'all', or 'lora_only'.")
+    task_type: str = Field(default="CAUSAL_LM", description="PEFT task type.")
+    use_rslora: bool = Field(default=False, description="Use Rank-Stabilized LoRA.")
+    lora_dtype: str | None = Field(default=None, description="LoRA dtype, e.g. 'bfloat16'.")
 
 
 class DistillationRunConfig(BaseModel):
@@ -214,4 +245,8 @@ class DistillationRunConfig(BaseModel):
     frozen_res: list[str] | None = Field(
         default=None,
         description="List of regular expressions matching names of parameters to freeze during training.",
+    )
+    lora: LoRAConfig | None = Field(
+        default=None,
+        description="LoRA configuration. If set, wraps the student model with LoRA adapters.",
     )

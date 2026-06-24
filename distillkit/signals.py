@@ -46,6 +46,7 @@ class OfflineSignalSource(SignalSource):
     preapplied_temperature: float
     vocab_size: int
     log_values: bool
+    sub_top_k: int | None
 
     def __init__(
         self,
@@ -53,11 +54,13 @@ class OfflineSignalSource(SignalSource):
         vocab_size: int,
         preapplied_temperature: float = 1.0,
         log_values: bool = True,
+        sub_top_k: int | None = None,
     ):
         self.compressor = compressor
         self.vocab_size = vocab_size
         self.preapplied_temperature = preapplied_temperature
         self.log_values = log_values
+        self.sub_top_k = sub_top_k
 
     @override
     def supports_hidden_states(self) -> bool:
@@ -73,6 +76,9 @@ class OfflineSignalSource(SignalSource):
             )
         with torch.no_grad():
             sparse_ids, sparse_values = self.compressor.decompress_to_sparse(batch)
+        if self.sub_top_k is not None:
+            sparse_ids = sparse_ids[..., : self.sub_top_k]
+            sparse_values = sparse_values[..., : self.sub_top_k]
         return SparseSignal(
             sparse_ids=sparse_ids,
             sparse_values=sparse_values,

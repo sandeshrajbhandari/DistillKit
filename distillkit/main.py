@@ -226,6 +226,29 @@ def load_student_model(
             )
 
     model: transformers.PreTrainedModel
+    if config.lora is not None:
+        from peft import LoraConfig, get_peft_model
+
+        target_modules = config.lora.target_modules or [
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+        ]
+        lora_kwargs = {}
+        if config.lora.lora_dtype is not None:
+            lora_kwargs["dtype"] = config.lora.lora_dtype
+        peft_config = LoraConfig(
+            r=config.lora.r,
+            lora_alpha=config.lora.alpha,
+            target_modules=target_modules,
+            lora_dropout=config.lora.dropout,
+            bias=config.lora.bias,
+            task_type=config.lora.task_type,
+            use_rslora=config.lora.use_rslora,
+            **lora_kwargs,
+        )
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
+
     if config.frozen_modules:
         module_set = set(config.frozen_modules)
         seen = set()
@@ -257,7 +280,11 @@ def create_signal_source(
             config=config.teacher.logprob_compressor,
             legacy_config=config.teacher.legacy_logit_compression,
         )
-        return OfflineSignalSource(compressor, vocab_size=vocab_size)
+        return OfflineSignalSource(
+            compressor,
+            vocab_size=vocab_size,
+            sub_top_k=config.teacher.sub_top_k,
+        )
     elif isinstance(config.teacher, TeacherModelConfig):
         teacher_model = transformers.AutoModelForCausalLM.from_pretrained(
             config.teacher.path, **(config.teacher.kwargs or {})
@@ -276,6 +303,44 @@ def collate_packed_batch(examples):
         key: torch.tensor([example[key] for example in examples])
         for key in examples[0].keys()
     }
+
+
+def _find_common_token_ids(text: str, tokenizer) -> list[int]:
+    return tokenizer(text, add_special_tokens=False).input_ids
+
+
+def _make_response_collator(
+    base_collator, instruction_ids: list[int], response_ids: list[int]
+):
+    len_inst = len(instruction_ids)
+    len_resp = len(response_ids)
+
+    def _collate_fn(examples):
+        batch = base_collator(examples)
+        input_ids = batch["input_ids"]
+        labels = torch.full_like(input_ids, -100)
+        B, L = labels.shape
+
+        for b in range(B):
+            ids = input_ids[b].tolist()
+            i = 0
+            while i < L:
+                if ids[i : i + len_resp] == response_ids:
+                    resp_start = i + len_resp
+                    j = resp_start
+                    while j < L:
+                        if ids[j : j + len_inst] == instruction_ids:
+                            break
+                        j += 1
+                    labels[b, resp_start:j] = input_ids[b, resp_start:j]
+                    i = j
+                else:
+                    i += 1
+
+        batch["labels"] = labels
+        return batch
+
+    return _collate_fn
 
 
 def load_tokenizer(config: DistillationRunConfig) -> transformers.PreTrainedTokenizer:
@@ -344,6 +409,18 @@ def do_distill(config: DistillationRunConfig, config_source: str | None = None):
         )
     else:
         hsm = None
+    if config.dataset.prepacked:
+        if config.dataset.response_only:
+            inst_ids = _find_common_token_ids(config.dataset.instruction_part, tokenizer)
+            resp_ids = _find_common_token_ids(config.dataset.response_part, tokenizer)
+            data_collator = _make_response_collator(
+                collate_packed_batch, inst_ids, resp_ids
+            )
+        else:
+            data_collator = collate_packed_batch
+    else:
+        data_collator = None
+
     trainer = DistillationTrainer(
         model=model,
         config=config,
@@ -353,7 +430,7 @@ def do_distill(config: DistillationRunConfig, config_source: str | None = None):
         train_dataset=ds_train,
         eval_dataset=ds_eval,
         args=training_arguments,
-        data_collator=collate_packed_batch if config.dataset.prepacked else None,
+        data_collator=data_collator,
         processing_class=None if config.dataset.prepacked else tokenizer,
     )
 
@@ -364,7 +441,10 @@ def do_distill(config: DistillationRunConfig, config_source: str | None = None):
         resume_from_checkpoint=resume_from_checkpoint,
     )
     LOG.info(f"Finished training. Saving model to {config.output_path}.")
-    trainer.save_model(config.output_path)
+    if config.lora is not None:
+        model.save_pretrained(config.output_path)
+    else:
+        trainer.save_model(config.output_path)
     LOG.info("Done.")
 
 
