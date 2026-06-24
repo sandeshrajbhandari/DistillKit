@@ -181,8 +181,8 @@ class DistillationRunConfig(BaseModel):
         alias="model",
     )
     dataset: DatasetConfiguration
-    teacher: TeacherModelConfig | TeacherDatasetConfig = Field(
-        ..., discriminator="kind"
+    teacher: TeacherModelConfig | TeacherDatasetConfig | None = Field(
+        default=None, discriminator="kind"
     )
     sequence_length: int = Field(
         description="Sequence length for training.",

@@ -149,3 +149,20 @@ class OnlineSignalSource(SignalSource):
             generation_temperature=1.0,
             vocab_size=vocab_size,
         )
+
+
+class NullSignalSource(SignalSource):
+    def supports_hidden_states(self) -> bool:
+        return False
+
+    def get_signal(
+        self, batch: dict[str, Any], return_hidden_states: bool = False
+    ) -> SparseSignal:
+        return SparseSignal(
+            sparse_ids=torch.empty(0, dtype=torch.long),
+            sparse_values=torch.empty(0),
+            log_values=True,
+            generation_temperature=1.0,
+            hidden_states=None,
+            vocab_size=0,
+        )

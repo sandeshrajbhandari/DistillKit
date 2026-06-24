@@ -26,7 +26,12 @@ from distillkit.configuration import (
 )
 from distillkit.hsd_mapping import HiddenStateMapping
 from distillkit.monkey_patch_packing import monkey_patch_packing_for_model
-from distillkit.signals import OfflineSignalSource, OnlineSignalSource, SignalSource
+from distillkit.signals import (
+    NullSignalSource,
+    OfflineSignalSource,
+    OnlineSignalSource,
+    SignalSource,
+)
 from distillkit.trainer import DistillationTrainer
 
 LOG = logging.getLogger(__name__)
@@ -283,6 +288,8 @@ def load_student_model(
 def create_signal_source(
     config: DistillationRunConfig, vocab_size: int
 ) -> SignalSource:
+    if config.teacher is None:
+        return NullSignalSource()
     if isinstance(config.teacher, TeacherDatasetConfig):
         compressor = LogprobCompressor(
             config=config.teacher.logprob_compressor,
