@@ -327,3 +327,17 @@ def compressed_logit_schema() -> pyarrow.Schema:
             ),
         ]
     )
+
+
+def raw_sparse_logit_schema() -> pyarrow.Schema:
+    return pyarrow.schema(
+        [
+            pyarrow.field("input_ids", pyarrow.list_(pyarrow.uint64())),
+            pyarrow.field(
+                "sparse_logprobs", pyarrow.list_(pyarrow.list_(pyarrow.float16()))
+            ),
+            pyarrow.field(
+                "sparse_token_ids", pyarrow.list_(pyarrow.list_(pyarrow.uint32()))
+            ),
+        ]
+    )

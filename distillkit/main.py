@@ -291,12 +291,20 @@ def create_signal_source(
     if config.teacher is None:
         return NullSignalSource()
     if isinstance(config.teacher, TeacherDatasetConfig):
+        if config.teacher.format == "raw":
+            return OfflineSignalSource(
+                compressor=None,
+                format="raw",
+                vocab_size=vocab_size,
+                sub_top_k=config.teacher.sub_top_k,
+            )
         compressor = LogprobCompressor(
             config=config.teacher.logprob_compressor,
             legacy_config=config.teacher.legacy_logit_compression,
         )
         return OfflineSignalSource(
-            compressor,
+            compressor=compressor,
+            format="compressed",
             vocab_size=vocab_size,
             sub_top_k=config.teacher.sub_top_k,
         )

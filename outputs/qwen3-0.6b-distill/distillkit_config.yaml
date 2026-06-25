@@ -1,0 +1,86 @@
+dataset:
+  eos_label_token_ids: null
+  eval_dataset: null
+  instruction_part: '<|im_start|>user
+
+    '
+  num_eval_samples: null
+  num_samples: 2000
+  prepacked: true
+  prepared_dataset_path: null
+  response_only: true
+  response_part: '<|im_start|>assistant
+
+    '
+  seed: 42
+  streaming: true
+  train_dataset:
+    config_name: null
+    repo_id: juanhm04/Qwen3-235B-Logits-Packed-8192
+    revision: null
+    split: train
+force_hidden_state_projection: false
+frozen_modules: null
+frozen_res: null
+functionary_packing: false
+layer_mapping: null
+lora:
+  alpha: 32
+  bias: none
+  dropout: 0.05
+  lora_dtype: null
+  r: 16
+  target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  task_type: CAUSAL_LM
+  use_rslora: false
+loss_functions:
+- function: kl
+  margin: null
+  missing_probability_handling: zero
+  sparse_chunk_length: 1024
+  temperature: 1.0
+  weight: 1.0
+model: models/Qwen3-0.6B
+model_auto_class: AutoModelForCausalLM
+model_kwargs: {}
+output_path: ./outputs/qwen3-0.6b-distill
+project_name: qwen3-0.6b-distill
+resize_embeddings_to_multiple_of: null
+sequence_length: 4096
+teacher:
+  kind: dataset
+  legacy_logit_compression: null
+  logprob_compressor:
+    d: 151936
+    delta_encoding: true
+    error_diffusion: false
+    exact_dtype: float32
+    exact_k: 32
+    k: 128
+    normalize_t: false
+    polynomial_terms:
+    - 0
+    - 1
+    - 2
+    residual_bins: []
+    term_dtype: float32
+  sub_top_k: 32
+training_args:
+  bf16: true
+  dataloader_drop_last: false
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: true
+  learning_rate: 0.0002
+  logging_steps: 1
+  max_steps: 500
+  optim: adamw_torch
+  per_device_train_batch_size: 1
+  remove_unused_columns: false
+  save_steps: 200
+  save_total_limit: 2
+trust_remote_code: false
+use_flash_attention: true

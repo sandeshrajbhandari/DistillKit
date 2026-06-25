@@ -42,7 +42,8 @@ class SignalSource(ABC):
 
 
 class OfflineSignalSource(SignalSource):
-    compressor: LogprobCompressor
+    compressor: LogprobCompressor | None
+    format: str
     preapplied_temperature: float
     vocab_size: int
     log_values: bool
@@ -50,17 +51,19 @@ class OfflineSignalSource(SignalSource):
 
     def __init__(
         self,
-        compressor: LogprobCompressor,
-        vocab_size: int,
+        compressor: LogprobCompressor | None = None,
+        vocab_size: int = 0,
         preapplied_temperature: float = 1.0,
         log_values: bool = True,
         sub_top_k: int | None = None,
+        format: str = "compressed",
     ):
         self.compressor = compressor
         self.vocab_size = vocab_size
         self.preapplied_temperature = preapplied_temperature
         self.log_values = log_values
         self.sub_top_k = sub_top_k
+        self.format = format
 
     @override
     def supports_hidden_states(self) -> bool:
@@ -74,8 +77,24 @@ class OfflineSignalSource(SignalSource):
             raise RuntimeError(
                 "Hidden states requested but signal source is precomputed logits"
             )
-        with torch.no_grad():
-            sparse_ids, sparse_values = self.compressor.decompress_to_sparse(batch)
+        if self.format == "raw":
+            if "sparse_logprobs" not in batch or "sparse_token_ids" not in batch:
+                raise ValueError(
+                    f"Raw sparse format configured but batch missing "
+                    f"'sparse_logprobs'/'sparse_token_ids'. "
+                    f"Found columns: {list(batch.keys())}. "
+                    f"Did you mean `format: compressed`?"
+                )
+            sparse_ids = batch["sparse_token_ids"].to(torch.int32)
+            sparse_values = batch["sparse_logprobs"].to(torch.float16)
+        else:
+            if self.compressor is None:
+                raise ValueError(
+                    "Compressed format configured but no compressor provided. "
+                    "Did you mean `format: raw`?"
+                )
+            with torch.no_grad():
+                sparse_ids, sparse_values = self.compressor.decompress_to_sparse(batch)
         if self.sub_top_k is not None:
             sparse_ids = sparse_ids[..., : self.sub_top_k]
             sparse_values = sparse_values[..., : self.sub_top_k]

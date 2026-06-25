@@ -142,6 +142,11 @@ class TeacherModelConfig(BaseModel):
 
 class TeacherDatasetConfig(BaseModel):
     kind: Literal["dataset"] = "dataset"
+    format: Literal["compressed", "raw"] = Field(
+        default="compressed",
+        description="Storage format of the teacher logits. 'compressed' uses polynomial + bitpacking; "
+        "'raw' stores fp16 logprobs + int32 indices with no compression.",
+    )
     legacy_logit_compression: LegacyLogitCompressionConfig | None = Field(
         default=None,
         description="Legacy logit compression configuration. Must match configuration used to capture logits.",

@@ -80,8 +80,10 @@ def _truncate_row(row):
         expected_len = len(row["packed_indices"])
     elif "bytepacked_indices" in row:
         expected_len = len(row["bytepacked_indices"])
+    elif "sparse_token_ids" in row:
+        expected_len = len(row["sparse_token_ids"])
     else:
-        raise ValueError("No token_ids or packed_indices found in row")
+        raise ValueError("No token_ids, packed_indices, bytepacked_indices, or sparse_token_ids found in row")
     for key in ["input_ids", "labels", "attention_mask"]:
         if key in row:
             res[key] = row[key][:expected_len]

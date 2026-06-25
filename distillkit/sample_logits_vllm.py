@@ -21,6 +21,7 @@ from distillkit.sample_common import (
     StreamingParquetWriter,
     compressed_logit_schema,
     load_preprocess_data,
+    raw_sparse_logit_schema,
 )
 
 
@@ -45,7 +46,9 @@ from distillkit.sample_common import (
 @click.option("--quantization", type=str, default=None)
 @click.option("--trust-remote-code/--no-trust-remote-code", default=False)
 @click.option("--gpu-memory-utilization", type=float, default=0.9)
-@click.option("--compression-config", type=str, required=True)
+@click.option("--compression-config", type=str, default=None)
+@click.option("--k", type=int, default=None, help="Number of top logprobs to capture (required with --store-raw).")
+@click.option("--store-raw/--no-store-raw", default=False, help="Store raw fp16 logprobs instead of compressed format.")
 @click.option("--macrobatch-size", type=int, default=256)
 @click.option("--max-workers", type=int, default=None)
 @click.option("--auto-vocab-size/--no-auto-vocab-size", type=bool, default=True)
@@ -68,49 +71,72 @@ def sample_logits(
     quantization: str | None,
     trust_remote_code: bool,
     gpu_memory_utilization: float,
-    compression_config: str,
+    compression_config: str | None,
+    k: int | None,
+    store_raw: bool,
     macrobatch_size: int,
     max_workers: int | None,
     auto_vocab_size: bool,
 ):
     logging.basicConfig(level=logging.INFO)
 
+    if store_raw and k is None:
+        logging.error("--k is required when --store-raw is set.")
+        sys.exit(-1)
+    if not store_raw and compression_config is None:
+        logging.error("--compression-config is required when --store-raw is not set.")
+        sys.exit(-1)
+
     tok = transformers.AutoTokenizer.from_pretrained(
         tokenizer or model, trust_remote_code=trust_remote_code
     )
 
-    # load compression config
-    with open(compression_config, "r") as f:
-        cfg = DistributionQuantizationConfig.model_validate(yaml.safe_load(f))
-    k = cfg.k
+    if store_raw:
+        num_k = k
+        schema = raw_sparse_logit_schema()
+        compressor = None
+        cfg = None
+    else:
+        with open(compression_config, "r") as f:
+            cfg = DistributionQuantizationConfig.model_validate(yaml.safe_load(f))
+        num_k = cfg.k
 
-    tok_vocab = tok.get_vocab()
-    tok_vocab_size = max(len(tok_vocab) + 1, max(tok_vocab.values()))
-    if cfg.d != tok_vocab_size:
-        if auto_vocab_size:
-            cfg.d = tok_vocab_size
-            logging.warning(
-                f"Automatically set compressor vocab size to {tok_vocab_size}"
-            )
-        elif cfg.d < tok_vocab_size:
-            logging.error("Compression config has too small vocabulary size!")
-            logging.error(
-                f"cfg.d: {cfg.d}, effective tokenizer vocab size: {tok_vocab_size}"
-            )
-            sys.exit(-1)
-        elif (
-            abs(cfg.d - tok_vocab_size) > 32
-        ):  # allow a little wiggle room for common padding
-            logging.warning(
-                f"Vocabulary size in compression config ({cfg.d}) is larger than needed ({tok_vocab_size}). "
-                "This will work but may consume more space than needed - double check that this is what you want."
-            )
+        tok_vocab = tok.get_vocab()
+        tok_vocab_size = max(len(tok_vocab) + 1, max(tok_vocab.values()))
+        if cfg.d != tok_vocab_size:
+            if auto_vocab_size:
+                cfg.d = tok_vocab_size
+                logging.warning(
+                    f"Automatically set compressor vocab size to {tok_vocab_size}"
+                )
+            elif cfg.d < tok_vocab_size:
+                logging.error("Compression config has too small vocabulary size!")
+                logging.error(
+                    f"cfg.d: {cfg.d}, effective tokenizer vocab size: {tok_vocab_size}"
+                )
+                sys.exit(-1)
+            elif (
+                abs(cfg.d - tok_vocab_size) > 32
+            ):
+                logging.warning(
+                    f"Vocabulary size in compression config ({cfg.d}) is larger than needed ({tok_vocab_size}). "
+                    "This will work but may consume more space than needed - double check that this is what you want."
+                )
+
+        os.makedirs(output, exist_ok=True)
+        with open(
+            os.path.join(output, "compression_config.yaml"), "w", encoding="utf-8"
+        ) as f:
+            yaml.safe_dump(cfg.model_dump(mode="json"), f)
+
+        compressor = LogprobCompressor(config=cfg)
+        schema = compressed_logit_schema()
 
     os.makedirs(output, exist_ok=True)
-    with open(
-        os.path.join(output, "compression_config.yaml"), "w", encoding="utf-8"
-    ) as f:
-        yaml.safe_dump(cfg.model_dump(mode="json"), f)
+    if store_raw:
+        meta = {"format": "raw", "k": num_k}
+        with open(os.path.join(output, "dataset_meta.yaml"), "w", encoding="utf-8") as f:
+            yaml.safe_dump(meta, f)
 
     logging.info(f"Loading and preprocessing data from {dataset} ({split})")
     ds = load_preprocess_data(
@@ -135,13 +161,9 @@ def sample_logits(
         pipeline_parallel_size=pipeline_parallel_size,
         enable_expert_parallel=enable_expert_parallel,
         gpu_memory_utilization=gpu_memory_utilization,
-        max_logprobs=k,
+        max_logprobs=num_k,
         logprobs_mode="raw_logprobs",
         max_model_len=max_model_len,
-    )
-
-    compressor = LogprobCompressor(
-        config=cfg,
     )
 
     sampling_params = vllm.SamplingParams(
@@ -152,10 +174,10 @@ def sample_logits(
         frequency_penalty=0,
         presence_penalty=0,
         repetition_penalty=1,
-        prompt_logprobs=k,
-        logprobs=k,
+        prompt_logprobs=num_k,
+        logprobs=num_k,
         flat_logprobs=True,
-        max_tokens=1,  # vLLM wants at least 1 generated token
+        max_tokens=1,
         detokenize=False,
         skip_special_tokens=False,
     )
@@ -165,39 +187,45 @@ def sample_logits(
     def process_and_write_sample(
         req_out: vllm.RequestOutput,
         input_ids_sample: list[int],
-        k: int,
-        compressor: LogprobCompressor,
+        num_k: int,
         writer: StreamingParquetWriter,
+        store_raw: bool = False,
     ) -> None:
-        """Process a single sample: extract logprobs, compress, and write to disk."""
-        top_indices, top_values = process_prompt_logprobs(req_out.prompt_logprobs, k=k)
+        """Process a single sample: extract logprobs and write to disk."""
+        top_indices, top_values = process_prompt_logprobs(req_out.prompt_logprobs, k=num_k)
         top_indices.unsqueeze_(0)
         top_values.unsqueeze_(0)
 
-        row_out = compressor.compress_from_sparse(
-            top_indices,
-            top_values,
-        )
-
-        compressed_logprobs_list = (
-            row_out["compressed_logprobs"].cpu().squeeze(0).tolist()
-        )
-        bytepacked_indices_list = (
-            row_out["bytepacked_indices"].cpu().squeeze(0).tolist()
-        )
-
-        writer.write(
-            {
-                "input_ids": input_ids_sample,
-                "compressed_logprobs": compressed_logprobs_list,
-                "bytepacked_indices": bytepacked_indices_list,
-            }
-        )
+        if store_raw:
+            sparse_logprobs = top_values.half()
+            sparse_token_ids = top_indices.int()
+            writer.write(
+                {
+                    "input_ids": input_ids_sample,
+                    "sparse_logprobs": sparse_logprobs.cpu().squeeze(0).tolist(),
+                    "sparse_token_ids": sparse_token_ids.cpu().squeeze(0).tolist(),
+                }
+            )
+        else:
+            row_out = compressor.compress_from_sparse(top_indices, top_values)
+            compressed_logprobs_list = (
+                row_out["compressed_logprobs"].cpu().squeeze(0).tolist()
+            )
+            bytepacked_indices_list = (
+                row_out["bytepacked_indices"].cpu().squeeze(0).tolist()
+            )
+            writer.write(
+                {
+                    "input_ids": input_ids_sample,
+                    "compressed_logprobs": compressed_logprobs_list,
+                    "bytepacked_indices": bytepacked_indices_list,
+                }
+            )
 
     try:
         with StreamingParquetWriter(
             output,
-            schema=compressed_logit_schema(),
+            schema=schema,
             file_max_rows=macrobatch_size,
             queue_maxsize=macrobatch_size * 2,
         ) as writer:
@@ -208,7 +236,6 @@ def sample_logits(
                     range(0, len(ds), macrobatch_size), desc="Logit Batches"
                 ):
                     batch_input_ids = ds[i0 : i0 + macrobatch_size]["input_ids"]
-                    # Submit CPU processing tasks to background thread
                     for idx, req_out in enumerate(
                         llm.generate(
                             [{"prompt_token_ids": x} for x in batch_input_ids],
@@ -219,13 +246,12 @@ def sample_logits(
                             process_and_write_sample,
                             req_out,
                             batch_input_ids[idx],
-                            k,
-                            compressor,
+                            num_k,
                             writer,
+                            store_raw,
                         )
                         futures.append(future)
 
-                    # Limit writes in flight to avoid unbounded memory growth
                     while len(futures) > macrobatch_size * 2:
                         futures.pop(0).result()
 
